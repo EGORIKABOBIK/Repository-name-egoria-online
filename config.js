@@ -1,5 +1,2 @@
-// Эти значения можно оставить пустыми.
-// При первом запуске приложение само покажет окно настройки.
-// Не вставляйте сюда service_role key.
-export const DEFAULT_SUPABASE_URL = "";
-export const DEFAULT_SUPABASE_KEY = "";
+export const DEFAULT_SUPABASE_URL = "ТВОЙ_PROJECT_URL";
+export const DEFAULT_SUPABASE_KEY = "ТВОЙ_PUBLISHABLE_KEY";
