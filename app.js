@@ -1272,17 +1272,18 @@ $("messageForm").addEventListener(
           );
         }
 
-        const safeName =
-          file.name.replace(
-            /[^a-zA-Z0-9а-яА-Я._-]/g,
-            "_"
-          );
+       const originalExtension = file.name
+  .split(".")
+  .pop()
+  ?.toLowerCase();
 
-        const path = `${
-          state.session.user.id
-        }/${
-          state.activeConversation.id
-        }/${crypto.randomUUID()}-${safeName}`;
+const safeExtension =
+  originalExtension &&
+  /^[a-z0-9]{1,10}$/.test(originalExtension)
+    ? originalExtension
+    : "file";
+
+const path = `${state.session.user.id}/${state.activeConversation.id}/${crypto.randomUUID()}.${safeExtension}`;
 
         const { error } =
           await state.supabase.storage
