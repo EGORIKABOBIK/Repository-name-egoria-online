@@ -1,0 +1,16 @@
+{
+  "name": "Егория Online",
+  "short_name": "Егория",
+  "description": "Интернет-мессенджер Егория",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#080d19",
+  "theme_color": "#101728",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
