@@ -1,16 +1,26 @@
 {
-  "name": "Егория Online",
-  "short_name": "Егория",
-  "description": "Интернет-мессенджер Егория",
-  "start_url": "./",
+  "name": "Egoria Online",
+  "short_name": "Egoria",
+  "description": "Современный мессенджер Egoria Online",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#080d19",
-  "theme_color": "#101728",
+  "orientation": "portrait",
+  "background_color": "#081221",
+  "theme_color": "#0A84FF",
+
   "icons": [
     {
-      "src": "icon.svg",
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
       "sizes": "512x512",
-      "type": "image/svg+xml"
+      "type": "image/png",
+      "purpose": "any maskable"
     }
   ]
 }
