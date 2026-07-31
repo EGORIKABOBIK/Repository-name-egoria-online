@@ -293,45 +293,86 @@ async function renderChats() {
 }
 
 async function startDirectChat(profile) {
-  const directKey = [state.session.user.id, profile.id].sort().join(":");
-  let { data: conversation } = await state.supabase
-    .from("conversations").select("*").eq("direct_key", directKey).maybeSingle();
+  const currentUserId = state.session.user.id;
+  const directKey = [currentUserId, profile.id].sort().join(":");
 
-  if (!conversation) {
-    const { data, error } = await state.supabase
+  try {
+    // Сначала проверяем, существует ли уже такой личный чат.
+    let { data: conversation, error: findError } = await state.supabase
       .from("conversations")
-      .insert({
-        type: "direct",
-        creator_id: state.session.user.id,
-        direct_key: directKey,
-      })
-      .select()
-      .single();
-    if (error) {
-      if (error.code === "23505") {
-        const retry = await state.supabase.from("conversations").select("*").eq("direct_key", directKey).single();
-        conversation = retry.data;
+      .select("*")
+      .eq("direct_key", directKey)
+      .maybeSingle();
+
+    if (findError) throw findError;
+
+    if (!conversation) {
+      // Создаём ID сами, чтобы не делать .select() сразу после INSERT.
+      const conversationId = crypto.randomUUID();
+
+      const { error: createError } = await state.supabase
+        .from("conversations")
+        .insert({
+          id: conversationId,
+          type: "direct",
+          creator_id: currentUserId,
+          direct_key: directKey,
+        });
+
+      if (createError) {
+        // Возможно, второй пользователь одновременно создал такой же чат.
+        if (createError.code === "23505") {
+          const { data: existingConversation, error: retryError } =
+            await state.supabase
+              .from("conversations")
+              .select("*")
+              .eq("direct_key", directKey)
+              .single();
+
+          if (retryError) throw retryError;
+          conversation = existingConversation;
+        } else {
+          throw createError;
+        }
       } else {
-        showToast(error.message, "error");
-        return;
+        conversation = {
+          id: conversationId,
+          type: "direct",
+          creator_id: currentUserId,
+          direct_key: directKey,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
       }
-    } else conversation = data;
 
-    const { error: memberError } = await state.supabase
-      .from("conversation_members")
-      .upsert([
-        { conversation_id: conversation.id, user_id: state.session.user.id, role: "owner" },
-        { conversation_id: conversation.id, user_id: profile.id, role: "member" },
-      ], { onConflict: "conversation_id,user_id" });
-    if (memberError) {
-      showToast(memberError.message, "error");
-      return;
+      const { error: memberError } = await state.supabase
+        .from("conversation_members")
+        .upsert(
+          [
+            {
+              conversation_id: conversation.id,
+              user_id: currentUserId,
+              role: "owner",
+            },
+            {
+              conversation_id: conversation.id,
+              user_id: profile.id,
+              role: "member",
+            },
+          ],
+          { onConflict: "conversation_id,user_id" }
+        );
+
+      if (memberError) throw memberError;
     }
-  }
-  await loadConversations();
-  openConversation(conversation, profile);
-}
 
+    await loadConversations();
+    openConversation(conversation, profile);
+  } catch (error) {
+    console.error("Ошибка создания личного чата:", error);
+    showToast(error.message || "Не удалось открыть чат.", "error");
+  }
+}
 async function openConversation(conversation, profile) {
   state.activeConversation = conversation;
   state.activeOther = profile;
