@@ -1221,36 +1221,36 @@ async function hideMessageForMe(message) {
 
 async function deleteMessageForEveryone(message) {
   if (message.sender_id !== state.session.user.id) {
+    showToast("Удалить у всех можно только своё сообщение.", "error");
     return;
   }
 
   try {
-    if (message.attachment_path) {
-      await state.supabase.storage
-        .from("egoria-files")
-        .remove([message.attachment_path]);
-    }
+    const attachmentPath = message.attachment_path || null;
 
-    const { error } = await state.supabase
-      .from("messages")
-      .update({
-        body: "",
-        attachment_path: null,
-        attachment_name: null,
-        attachment_type: null,
-        attachment_size: null,
-        deleted_at: new Date().toISOString(),
-        edited_at: null,
-      })
-      .eq("id", message.id)
-      .eq("sender_id", state.session.user.id);
+    const { error } = await state.supabase.rpc("delete_message_for_everyone", {
+      p_message_id: message.id,
+    });
 
     if (error) throw error;
 
+    // Сам файл удаляем после успешного удаления сообщения для всех.
+    // Если удаление файла не получится, сообщение всё равно уже будет удалено из чата.
+    if (attachmentPath) {
+      const { error: storageError } = await state.supabase.storage
+        .from("egoria-files")
+        .remove([attachmentPath]);
+
+      if (storageError) {
+        console.warn("Не удалось удалить вложение из Storage:", storageError);
+      }
+    }
+
     await Promise.all([loadMessages(), loadConversations()]);
+    showToast("Сообщение удалено у всех.", "success");
   } catch (error) {
     console.error(error);
-    showToast(error.message || "Не удалось удалить сообщение.", "error");
+    showToast(error.message || "Не удалось удалить сообщение у всех.", "error");
   }
 }
 
