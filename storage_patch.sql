@@ -1,62 +1,224 @@
--- ЕГОРИЯ ONLINE — ДОПОЛНЕНИЕ ДЛЯ АВАТАРОВ И ВЛОЖЕНИЙ
--- Запусти этот файл целиком в Supabase SQL Editor ОДИН РАЗ.
+-- EGORIA ONLINE — UPGRADE PACK
+-- Запусти этот файл ЦЕЛИКОМ один раз в Supabase -> SQL Editor -> Run.
+-- Скрипт идемпотентный: его можно повторно запустить.
 
--- 1. Публичный bucket только для аватаров.
+-- =========================================================
+-- 1. PROFILES: безопасное чтение и изменение своего профиля
+-- =========================================================
+
+alter table public.profiles enable row level security;
+
+drop policy if exists "egoria_profiles_select" on public.profiles;
+drop policy if exists "egoria_profiles_insert_own" on public.profiles;
+drop policy if exists "egoria_profiles_update_own" on public.profiles;
+
+create policy "egoria_profiles_select"
+on public.profiles
+for select
+to authenticated
+using (true);
+
+create policy "egoria_profiles_insert_own"
+on public.profiles
+for insert
+to authenticated
+with check (id = auth.uid());
+
+create policy "egoria_profiles_update_own"
+on public.profiles
+for update
+to authenticated
+using (id = auth.uid())
+with check (id = auth.uid());
+
+-- =========================================================
+-- 2. MESSAGES: ответы, "удалить у меня", прочитано
+-- =========================================================
+
+alter table public.messages
+  add column if not exists reply_to uuid,
+  add column if not exists hidden_for uuid[] not null default '{}'::uuid[],
+  add column if not exists read_at timestamptz;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'messages_reply_to_fkey'
+      and conrelid = 'public.messages'::regclass
+  ) then
+    alter table public.messages
+      add constraint messages_reply_to_fkey
+      foreign key (reply_to)
+      references public.messages(id)
+      on delete set null;
+  end if;
+end $$;
+
+alter table public.messages enable row level security;
+
+drop policy if exists "egoria_message_sender_update" on public.messages;
+
+create policy "egoria_message_sender_update"
+on public.messages
+for update
+to authenticated
+using (sender_id = auth.uid())
+with check (sender_id = auth.uid());
+
+-- Удалить сообщение только у себя, не давая получателю менять текст сообщения.
+create or replace function public.hide_message_for_me(p_message_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_conversation_id uuid;
+begin
+  select conversation_id
+    into v_conversation_id
+  from public.messages
+  where id = p_message_id;
+
+  if v_conversation_id is null then
+    raise exception 'Message not found';
+  end if;
+
+  if not public.is_conversation_member(v_conversation_id, auth.uid()) then
+    raise exception 'Not allowed';
+  end if;
+
+  update public.messages
+  set hidden_for = case
+    when auth.uid() = any(coalesce(hidden_for, '{}'::uuid[]))
+      then coalesce(hidden_for, '{}'::uuid[])
+    else array_append(coalesce(hidden_for, '{}'::uuid[]), auth.uid())
+  end
+  where id = p_message_id;
+end;
+$$;
+
+grant execute on function public.hide_message_for_me(uuid) to authenticated;
+
+-- Отметить входящие сообщения открытого диалога прочитанными.
+create or replace function public.mark_conversation_read(p_conversation_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_conversation_member(p_conversation_id, auth.uid()) then
+    raise exception 'Not allowed';
+  end if;
+
+  update public.messages
+  set read_at = coalesce(read_at, now())
+  where conversation_id = p_conversation_id
+    and sender_id <> auth.uid()
+    and read_at is null
+    and deleted_at is null;
+end;
+$$;
+
+grant execute on function public.mark_conversation_read(uuid) to authenticated;
+
+-- =========================================================
+-- 3. AVATARS STORAGE
+-- =========================================================
+
 insert into storage.buckets (id, name, public, file_size_limit)
 values ('egoria-avatars', 'egoria-avatars', true, 5242880)
 on conflict (id) do update
-set public = true, file_size_limit = 5242880;
+set public = true,
+    file_size_limit = 5242880;
 
-drop policy if exists "Avatar owners can upload" on storage.objects;
-drop policy if exists "Avatar owners can update" on storage.objects;
-drop policy if exists "Avatar owners can delete" on storage.objects;
+drop policy if exists "egoria_avatar_insert" on storage.objects;
+drop policy if exists "egoria_avatar_update" on storage.objects;
+drop policy if exists "egoria_avatar_delete" on storage.objects;
 
-create policy "Avatar owners can upload"
-on storage.objects for insert to authenticated
+create policy "egoria_avatar_insert"
+on storage.objects
+for insert
+to authenticated
 with check (
   bucket_id = 'egoria-avatars'
   and (storage.foldername(name))[1] = auth.uid()::text
 );
 
-create policy "Avatar owners can update"
-on storage.objects for update to authenticated
+create policy "egoria_avatar_update"
+on storage.objects
+for update
+to authenticated
 using (
   bucket_id = 'egoria-avatars'
-  and owner_id = auth.uid()::text
+  and (storage.foldername(name))[1] = auth.uid()::text
 )
 with check (
   bucket_id = 'egoria-avatars'
-  and owner_id = auth.uid()::text
+  and (storage.foldername(name))[1] = auth.uid()::text
 );
 
-create policy "Avatar owners can delete"
-on storage.objects for delete to authenticated
+create policy "egoria_avatar_delete"
+on storage.objects
+for delete
+to authenticated
 using (
   bucket_id = 'egoria-avatars'
-  and owner_id = auth.uid()::text
+  and (storage.foldername(name))[1] = auth.uid()::text
 );
 
--- 2. Участники переписки могут читать вложения этой переписки.
--- Путь файла в приложении: user_id/conversation_id/имя_файла
-drop policy if exists "Users can view own uploaded files" on storage.objects;
-drop policy if exists "Conversation members can view attachments" on storage.objects;
+-- =========================================================
+-- 4. CHAT FILES STORAGE
+-- Путь: user_id/conversation_id/file.ext
+-- =========================================================
 
-create policy "Conversation members can view attachments"
-on storage.objects for select to authenticated
-using (
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('egoria-files', 'egoria-files', false, 26214400)
+on conflict (id) do update
+set public = false,
+    file_size_limit = 26214400;
+
+drop policy if exists "egoria_files_insert" on storage.objects;
+drop policy if exists "egoria_files_select" on storage.objects;
+drop policy if exists "egoria_files_delete" on storage.objects;
+
+create policy "egoria_files_insert"
+on storage.objects
+for insert
+to authenticated
+with check (
   bucket_id = 'egoria-files'
-  and (
-    owner_id = auth.uid()::text
-    or (
-      array_length(storage.foldername(name), 1) >= 2
-      and (storage.foldername(name))[2] ~
-        '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
-      and public.is_conversation_member(
-        ((storage.foldername(name))[2])::uuid,
-        auth.uid()
-      )
-    )
+  and array_length(storage.foldername(name), 1) >= 2
+  and (storage.foldername(name))[1] = auth.uid()::text
+  and public.is_conversation_member(
+    ((storage.foldername(name))[2])::uuid,
+    auth.uid()
   )
 );
 
-select 'Дополнение Storage успешно установлено' as result;
+create policy "egoria_files_select"
+on storage.objects
+for select
+to authenticated
+using (
+  bucket_id = 'egoria-files'
+  and array_length(storage.foldername(name), 1) >= 2
+  and public.is_conversation_member(
+    ((storage.foldername(name))[2])::uuid,
+    auth.uid()
+  )
+);
+
+create policy "egoria_files_delete"
+on storage.objects
+for delete
+to authenticated
+using (
+  bucket_id = 'egoria-files'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+select 'Egoria upgrade installed successfully' as result;
