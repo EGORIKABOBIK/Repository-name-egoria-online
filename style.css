@@ -756,3 +756,69 @@ dialog::backdrop { background:rgba(0,0,0,.64);backdrop-filter:blur(4px); }
   .avatar { width:44px;height:44px; }
   .message { max-width:90%; }
 }
+
+
+/* =========================================================
+   iPhone / mobile chat layout fix — v2
+   ========================================================= */
+@media (max-width:760px) {
+  html,
+  body,
+  #appScreen {
+    width:100%;
+    height:100dvh;
+    min-height:100dvh;
+    overflow:hidden;
+  }
+
+  .conversation {
+    position:fixed;
+    inset:0;
+    width:100%;
+    height:100dvh;
+    min-height:100dvh;
+    overflow:hidden;
+  }
+
+  .chat-view {
+    width:100%;
+    height:100dvh;
+    min-height:100dvh;
+    max-height:100dvh;
+    overflow:hidden;
+    grid-template-rows:auto auto minmax(0,1fr) auto auto auto;
+  }
+
+  /* Не даём шапке залезать под Dynamic Island / строку состояния. */
+  .chat-header {
+    min-height:calc(64px + env(safe-area-inset-top));
+    padding-top:calc(9px + env(safe-area-inset-top));
+    padding-left:max(12px, env(safe-area-inset-left));
+    padding-right:max(12px, env(safe-area-inset-right));
+    flex-shrink:0;
+  }
+
+  /* Область сообщений сразу занимает всё свободное место и больше не «растёт». */
+  .messages {
+    min-height:0;
+    height:auto;
+    overflow-y:auto;
+    overflow-x:hidden;
+    flex:1 1 auto;
+    overscroll-behavior-y:contain;
+    -webkit-overflow-scrolling:touch;
+  }
+
+  .message-search,
+  .reply-bar,
+  .attachment-preview,
+  .composer {
+    flex-shrink:0;
+  }
+
+  .composer {
+    padding-left:max(9px, env(safe-area-inset-left));
+    padding-right:max(9px, env(safe-area-inset-right));
+    padding-bottom:calc(8px + env(safe-area-inset-bottom));
+  }
+}
