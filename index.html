@@ -3,31 +3,28 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#101728">
-  <meta name="description" content="Егория Online — личный интернет-мессенджер">
-  <title>Егория Online</title>
+  <meta name="theme-color" content="#07101f">
+  <meta name="description" content="Egoria Online — современный личный мессенджер">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Egoria">
+  <title>Egoria Online</title>
+
   <link rel="manifest" href="manifest.webmanifest">
-
-<link rel="apple-touch-icon" href="apple-touch-icon.png">
-<link rel="icon" type="image/png" sizes="32x32" href="favicon.ico">
-<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
-<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
-<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
-
-<link rel="shortcut icon" href="favicon.ico">
-
-<link rel="icon" href="icon.svg" type="image/svg+xml">
-
-<link rel="stylesheet" href="style.css">
+  <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
+  <link rel="icon" href="favicon.ico">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div id="toast" class="toast hidden"></div>
 
   <main id="setupScreen" class="center-screen hidden">
     <section class="auth-card">
-      <div class="logo">Е</div>
-      <h1>Настройка Егории</h1>
-      <p>Владелец приложения должен один раз указать адрес Supabase и публичный ключ.</p>
+      <div class="logo app-logo" aria-hidden="true"></div>
+      <h1>Настройка Egoria</h1>
+      <p>Владелец приложения один раз указывает адрес Supabase и публичный ключ.</p>
       <form id="setupForm">
         <label>Project URL
           <input id="setupUrl" type="url" placeholder="https://xxxx.supabase.co" required>
@@ -43,8 +40,8 @@
 
   <main id="authScreen" class="center-screen hidden">
     <section class="auth-card">
-      <div class="logo">Е</div>
-      <h1>Егория Online</h1>
+      <div class="logo app-logo" aria-hidden="true"></div>
+      <h1>Egoria Online</h1>
       <p id="authSubtitle">Войди в свой аккаунт</p>
 
       <div class="auth-tabs">
@@ -61,14 +58,18 @@
             <div class="username-input"><span>@</span><input id="username" maxlength="24" placeholder="egor_777"></div>
           </label>
         </div>
+
         <label>Email
           <input id="email" type="email" autocomplete="email" required placeholder="example@mail.com">
         </label>
+
         <label>Пароль
           <input id="password" type="password" minlength="8" autocomplete="current-password" required placeholder="Минимум 8 символов">
         </label>
+
         <button id="authSubmit" class="primary full">Войти</button>
       </form>
+
       <button id="changeSetup" class="link-button" type="button">Изменить подключение Supabase</button>
     </section>
   </main>
@@ -76,29 +77,32 @@
   <div id="appScreen" class="app hidden">
     <aside class="sidebar">
       <header class="side-header">
-        <div class="brand"><span>Е</span><strong>Егория</strong></div>
+        <div class="brand">
+          <span class="brand-mark app-logo" aria-hidden="true"></span>
+          <strong>Egoria</strong>
+        </div>
         <div class="header-actions">
-          <button id="themeBtn" title="Сменить тему">◐</button>
-          <button id="profileBtn" title="Профиль">⚙</button>
+          <button id="themeBtn" title="Сменить тему" type="button">◐</button>
+          <button id="profileBtn" title="Мой профиль" type="button">⚙</button>
         </div>
       </header>
 
       <section class="me-card">
-        <div id="myAvatar" class="avatar">Е</div>
+        <button id="myAvatar" class="avatar avatar-button" type="button">Е</button>
         <div class="identity">
           <strong id="myName">Загрузка…</strong>
           <small id="myUsername"></small>
         </div>
-        <button id="logoutBtn" class="subtle">Выйти</button>
+        <button id="logoutBtn" class="subtle" type="button">Выйти</button>
       </section>
 
       <div class="search-box">
-        <input id="userSearch" type="search" placeholder="Найти человека по @юзу">
+        <input id="userSearch" type="search" autocomplete="off" placeholder="Найти по @юзу">
       </div>
 
       <div class="side-tabs">
-        <button id="chatsTab" class="active">Чаты</button>
-        <button id="peopleTab">Люди</button>
+        <button id="chatsTab" class="active" type="button">Чаты</button>
+        <button id="peopleTab" type="button">Люди</button>
       </div>
 
       <div id="chatList" class="list"></div>
@@ -107,28 +111,39 @@
 
     <section class="conversation">
       <div id="emptyChat" class="empty-chat">
-        <div class="logo">Е</div>
-        <h2>Выбери человека</h2>
-        <p>Начни личную переписку через интернет.</p>
+        <div class="logo app-logo" aria-hidden="true"></div>
+        <h2>Выбери чат</h2>
+        <p>Найди пользователя по @юзу и начни переписку.</p>
       </div>
 
       <div id="chatView" class="chat-view hidden">
         <header class="chat-header">
-          <button id="mobileBack" class="mobile-back">←</button>
-          <div id="chatAvatar" class="avatar">Е</div>
-          <div class="chat-title">
+          <button id="mobileBack" class="mobile-back" type="button" aria-label="Назад">←</button>
+          <button id="chatAvatar" class="avatar avatar-button" type="button">Е</button>
+
+          <button class="chat-title chat-profile-link" id="chatProfileLink" type="button">
             <strong id="chatName"></strong>
             <small id="chatStatus"></small>
-          </div>
-          <button id="searchMessagesBtn" class="icon-btn" title="Поиск в переписке">⌕</button>
+          </button>
+
+          <button id="searchMessagesBtn" class="icon-btn" type="button" title="Поиск в переписке">⌕</button>
         </header>
 
         <div id="messageSearchBar" class="message-search hidden">
           <input id="messageSearch" placeholder="Поиск по сообщениям">
-          <button id="closeMessageSearch">×</button>
+          <button id="closeMessageSearch" type="button">×</button>
         </div>
 
         <div id="messages" class="messages"></div>
+
+        <div id="replyBar" class="reply-bar hidden">
+          <span class="reply-accent"></span>
+          <div>
+            <strong id="replyAuthor"></strong>
+            <small id="replyText"></small>
+          </div>
+          <button id="cancelReply" type="button" aria-label="Отменить ответ">×</button>
+        </div>
 
         <div id="attachmentPreview" class="attachment-preview hidden"></div>
 
@@ -162,6 +177,18 @@
     </form>
   </dialog>
 
+  <dialog id="userProfileDialog" class="profile-view-dialog">
+    <div class="user-profile-card">
+      <button id="closeUserProfile" class="dialog-close" type="button" aria-label="Закрыть">×</button>
+      <div id="viewProfileAvatar" class="avatar profile-avatar">Е</div>
+      <h2 id="viewProfileName"></h2>
+      <div id="viewProfileUsername" class="profile-username"></div>
+      <div id="viewProfileStatus" class="profile-status"></div>
+      <p id="viewProfileBio" class="profile-bio"></p>
+      <button id="writeToUser" class="primary full" type="button">Написать сообщение</button>
+    </div>
+  </dialog>
+
   <dialog id="editMessageDialog">
     <form id="editMessageForm" class="dialog-form">
       <h2>Редактировать сообщение</h2>
@@ -171,6 +198,18 @@
         <button class="primary">Сохранить</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="deleteMessageDialog">
+    <div class="dialog-form">
+      <h2>Удалить сообщение?</h2>
+      <p class="dialog-muted">Выбери, где удалить сообщение.</p>
+      <div class="delete-actions">
+        <button id="deleteForMe" type="button">Удалить у меня</button>
+        <button id="deleteForEveryone" class="danger-button" type="button">Удалить у всех</button>
+        <button id="cancelDeleteMessage" type="button">Отмена</button>
+      </div>
+    </div>
   </dialog>
 
   <script type="module" src="app.js"></script>
