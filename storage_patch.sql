@@ -102,6 +102,46 @@ $$;
 
 grant execute on function public.hide_message_for_me(uuid) to authenticated;
 
+-- Удалить СВОЁ сообщение у всех участников диалога.
+-- SECURITY DEFINER нужен, чтобы действие не ломалось из-за пересечения RLS-политик,
+-- но внутри функции жёстко проверяется, что auth.uid() = sender_id.
+create or replace function public.delete_message_for_everyone(p_message_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_sender_id uuid;
+begin
+  select sender_id
+    into v_sender_id
+  from public.messages
+  where id = p_message_id;
+
+  if v_sender_id is null then
+    raise exception 'Message not found';
+  end if;
+
+  if v_sender_id <> auth.uid() then
+    raise exception 'You can delete for everyone only your own message';
+  end if;
+
+  update public.messages
+  set body = '',
+      attachment_path = null,
+      attachment_name = null,
+      attachment_type = null,
+      attachment_size = null,
+      deleted_at = now(),
+      edited_at = null
+  where id = p_message_id
+    and sender_id = auth.uid();
+end;
+$$;
+
+grant execute on function public.delete_message_for_everyone(uuid) to authenticated;
+
 -- Отметить входящие сообщения открытого диалога прочитанными.
 create or replace function public.mark_conversation_read(p_conversation_id uuid)
 returns void
