@@ -13,6 +13,9 @@ const state = {
   messages: [],
   realtimeChannel: null,
   editingMessageId: null,
+  replyingTo: null,
+  typingTimer: null,
+  activeSideTab: "chats",
   authMode: "login",
 };
 
@@ -244,7 +247,8 @@ async function enterApp() {
   setScreen("appScreen");
 
   await loadMyProfile();
-  await Promise.all([loadPeople(), loadConversations()]);
+  renderPeopleSearchPrompt();
+  await loadConversations();
   await updatePresence();
 
   setInterval(updatePresence, 30000);
@@ -297,24 +301,42 @@ function renderMe() {
 
   renderAvatar($("myAvatar"), state.me);
 }
+function normalizeUsernameQuery(value = "") {
+  return value.trim().replace(/^@+/, "").toLowerCase();
+}
+
+function renderPeopleSearchPrompt() {
+  const list = $("peopleList");
+  if (!list) return;
+
+  list.innerHTML = `
+    <div class="list-empty people-search-prompt">
+      <div class="list-empty-icon">⌕</div>
+      <strong>Найди человека по @юзу</strong>
+      <span>Введите, например, <b>@egor555</b>. Общего списка зарегистрированных пользователей здесь нет.</span>
+    </div>
+  `;
+}
+
 async function loadPeople(query = "") {
-  let request = state.supabase
+  const normalized = normalizeUsernameQuery(query);
+
+  if (!normalized) {
+    renderPeopleSearchPrompt();
+    return;
+  }
+
+  const { data, error } = await state.supabase
     .from("profiles")
     .select("id,username,display_name,bio,avatar_path,last_seen")
     .neq("id", state.session.user.id)
-    .order("display_name")
-    .limit(50);
-
-  if (query) {
-    request = request.or(
-      `username.ilike.%${query}%,display_name.ilike.%${query}%`
-    );
-  }
-
-  const { data, error } = await request;
+    .ilike("username", `%${normalized}%`)
+    .order("username")
+    .limit(20);
 
   if (error) {
     console.error(error);
+    showToast("Не удалось выполнить поиск.", "error");
     return;
   }
 
@@ -322,10 +344,10 @@ async function loadPeople(query = "") {
     state.profiles.set(profile.id, profile)
   );
 
-  renderPeople(data || []);
+  renderPeople(data || [], normalized);
 }
 
-async function renderPeople(people) {
+async function renderPeople(people, query = "") {
   const list = $("peopleList");
   list.innerHTML = "";
 
@@ -333,36 +355,32 @@ async function renderPeople(people) {
     list.innerHTML = `
       <div class="list-empty">
         <div class="list-empty-icon">🔎</div>
-        <strong>Никого не найдено</strong>
-        <span>Проверь правильность юза или имени.</span>
+        <strong>Пользователь не найден</strong>
+        <span>По юзу <b>@${escapeHtml(query)}</b> ничего нет.</span>
       </div>`;
     return;
   }
 
   for (const profile of people) {
     const button = document.createElement("button");
-    button.className = "list-item";
+    button.className = "list-item person-list-item";
+    button.type = "button";
 
     button.innerHTML = `
       <span class="avatar">
-        ${escapeHtml(
-          (profile.display_name || "Е")[0].toUpperCase()
-        )}
+        ${escapeHtml((profile.display_name || "Е")[0].toUpperCase())}
       </span>
 
       <span class="item-copy">
         <strong>${escapeHtml(profile.display_name)}</strong>
         <small>@${escapeHtml(profile.username)}</small>
       </span>
+
+      <span class="person-open">›</span>
     `;
 
-    renderAvatar(
-      button.querySelector(".avatar"),
-      profile
-    );
-
-    button.onclick = () => startDirectChat(profile);
-
+    await renderAvatar(button.querySelector(".avatar"), profile);
+    button.onclick = () => openUserProfile(profile);
     list.appendChild(button);
   }
 }
@@ -463,7 +481,7 @@ async function loadConversations() {
     state.supabase
       .from("messages")
       .select(
-        "id,conversation_id,sender_id,body,attachment_name,created_at,deleted_at"
+        "id,conversation_id,sender_id,body,attachment_name,created_at,deleted_at,read_at,hidden_for"
       )
       .in("conversation_id", ids)
       .order("created_at", {
@@ -484,16 +502,30 @@ async function loadConversations() {
   }
 
   const latestByConversation = new Map();
+  const unreadByConversation = new Map();
+  const me = state.session.user.id;
 
   for (const message of recentMessages || []) {
+    const hiddenFor = Array.isArray(message.hidden_for)
+      ? message.hidden_for
+      : [];
+
+    if (hiddenFor.includes(me)) {
+      continue;
+    }
+
+    if (!latestByConversation.has(message.conversation_id)) {
+      latestByConversation.set(message.conversation_id, message);
+    }
+
     if (
-      !latestByConversation.has(
-        message.conversation_id
-      )
+      message.sender_id !== me &&
+      !message.read_at &&
+      !message.deleted_at
     ) {
-      latestByConversation.set(
+      unreadByConversation.set(
         message.conversation_id,
-        message
+        (unreadByConversation.get(message.conversation_id) || 0) + 1
       );
     }
   }
@@ -517,6 +549,7 @@ async function loadConversations() {
         ...conversation,
         other_id: member?.user_id,
         latest_message: latestMessage,
+        unread_count: unreadByConversation.get(conversation.id) || 0,
       };
     })
     .filter(
@@ -546,44 +579,32 @@ async function renderChats() {
       <div class="list-empty">
         <div class="list-empty-icon">💬</div>
         <strong>Чатов пока нет</strong>
-        <span>
-          Найди человека во вкладке «Люди»
-          и отправь первое сообщение.
-        </span>
+        <span>Найди человека во вкладке «Люди» по его @юзу и начни переписку.</span>
       </div>
     `;
-
     return;
   }
 
   for (const conversation of state.conversations) {
-    let profile = state.profiles.get(
-      conversation.other_id
-    );
+    let profile = state.profiles.get(conversation.other_id);
 
     if (!profile) {
       const { data } = await state.supabase
         .from("profiles")
-        .select(
-          "id,username,display_name,bio,avatar_path,last_seen"
-        )
+        .select("id,username,display_name,bio,avatar_path,last_seen")
         .eq("id", conversation.other_id)
         .single();
 
       profile = data;
 
       if (profile) {
-        state.profiles.set(
-          profile.id,
-          profile
-        );
+        state.profiles.set(profile.id, profile);
       }
     }
 
     if (!profile) continue;
 
-    const message =
-      conversation.latest_message;
+    const message = conversation.latest_message;
 
     const preview = message.deleted_at
       ? "Сообщение удалено"
@@ -593,73 +614,37 @@ async function renderChats() {
           ? `📎 ${message.attachment_name}`
           : "Новое сообщение";
 
-    const silentDays =
-      daysWithoutMessages(
-        message.created_at
-      );
+    const unread = conversation.unread_count || 0;
+    const button = document.createElement("button");
 
-    const dropletText =
-      silentDays === 0
-        ? "сегодня"
-        : `${silentDays} дн.`;
-
-    const button =
-      document.createElement("button");
-
-    button.className =
-      "list-item chat-list-item";
+    button.className = `list-item chat-list-item ${unread ? "has-unread" : ""}`;
+    button.type = "button";
 
     button.innerHTML = `
       <span class="avatar">
-        ${escapeHtml(
-          (profile.display_name || "Е")[0].toUpperCase()
-        )}
+        ${escapeHtml((profile.display_name || "Е")[0].toUpperCase())}
       </span>
 
       <span class="item-copy">
         <span class="chat-row-top">
-          <strong>
-            ${escapeHtml(profile.display_name)}
-          </strong>
-
-          <time>
-            ${escapeHtml(
-              formatChatTime(
-                message.created_at
-              )
-            )}
-          </time>
+          <strong>${escapeHtml(profile.display_name)}</strong>
+          <time>${escapeHtml(formatChatTime(message.created_at))}</time>
         </span>
 
         <span class="chat-row-bottom">
-          <small>
-            ${escapeHtml(preview)}
-          </small>
-
-          <span
-            class="silence-drop"
-            title="Сколько не общались"
-          >
-            💧 ${escapeHtml(dropletText)}
-          </span>
+          <small>${escapeHtml(preview)}</small>
+          ${unread ? `<span class="unread-badge">${unread > 99 ? "99+" : unread}</span>` : ""}
         </span>
       </span>
     `;
 
-    renderAvatar(
-      button.querySelector(".avatar"),
-      profile
-    );
+    await renderAvatar(button.querySelector(".avatar"), profile);
 
-    button.onclick = () =>
-      openConversation(
-        conversation,
-        profile
-      );
-
+    button.onclick = () => openConversation(conversation, profile);
     list.appendChild(button);
   }
 }
+
 async function startDirectChat(profile) {
   const currentUserId = state.session.user.id;
   const directKey = [currentUserId, profile.id]
@@ -797,22 +782,17 @@ async function openConversation(
 
   await loadMessages();
   subscribeToMessages();
+  await markConversationRead();
+  await loadConversations();
 }
 
 function renderOnlineStatus(profile) {
-  const last = profile.last_seen
-    ? new Date(profile.last_seen)
-    : null;
-
-  const online =
-    last &&
-    Date.now() - last.getTime() < 70000;
-
-  $("chatStatus").textContent = online
-    ? "онлайн"
-    : last
-      ? `был(а) ${last.toLocaleString()}`
-      : `@${profile.username}`;
+  $("chatStatus").textContent = profilePresenceText(profile);
+  $("chatStatus").classList.toggle(
+    "online",
+    profile?.last_seen &&
+      Date.now() - new Date(profile.last_seen).getTime() < 70000
+  );
 }
 
 async function loadMessages() {
@@ -859,194 +839,202 @@ async function attachmentUrl(message) {
     : data.signedUrl;
 }
 
-async function renderMessages(
-  filter = ""
-) {
+async function renderMessages(filter = "") {
   const box = $("messages");
   box.innerHTML = "";
 
-  const normalized = filter
-    .trim()
-    .toLowerCase();
+  const normalized = filter.trim().toLowerCase();
+  const me = state.session.user.id;
+  const visibleMessages = state.messages.filter((message) => {
+    const hiddenFor = Array.isArray(message.hidden_for)
+      ? message.hidden_for
+      : [];
+    return !hiddenFor.includes(me);
+  });
 
-  for (const message of state.messages) {
+  if (!visibleMessages.length && !normalized) {
+    box.innerHTML = `
+      <div class="conversation-empty-state">
+        <div>👋</div>
+        <strong>Начало переписки</strong>
+        <span>Напишите первое сообщение.</span>
+      </div>
+    `;
+    return;
+  }
+
+  for (const message of visibleMessages) {
     if (
       normalized &&
-      !(message.body || "")
-        .toLowerCase()
-        .includes(normalized)
+      !(message.body || "").toLowerCase().includes(normalized)
     ) {
       continue;
     }
 
-    const mine =
-      message.sender_id ===
-      state.session.user.id;
-
-    const node =
-      document.createElement("article");
-
-    node.className =
-      `message ${mine ? "mine" : ""} ${
-        message.deleted_at
-          ? "deleted"
-          : ""
-      }`;
+    const mine = message.sender_id === me;
+    const node = document.createElement("article");
+    node.className = `message ${mine ? "mine" : ""} ${message.deleted_at ? "deleted" : ""}`;
+    node.dataset.messageId = message.id;
 
     const body = message.deleted_at
       ? "Сообщение удалено"
-      : escapeHtml(
-          message.body || ""
-        );
+      : escapeHtml(message.body || "");
+
+    const replyTarget = message.reply_to
+      ? state.messages.find((item) => item.id === message.reply_to)
+      : null;
+
+    const replyPreview = replyTarget
+      ? `
+        <button class="reply-preview" type="button" data-jump-reply="${replyTarget.id}">
+          <strong>${replyTarget.sender_id === me ? "Вы" : escapeHtml(state.activeOther?.display_name || "Сообщение")}</strong>
+          <span>${escapeHtml(
+            replyTarget.deleted_at
+              ? "Сообщение удалено"
+              : replyTarget.body?.trim() ||
+                replyTarget.attachment_name ||
+                "Вложение"
+          )}</span>
+        </button>
+      `
+      : "";
 
     node.innerHTML = `
-      <div class="message-body">
-        ${body}
-      </div>
+      ${replyPreview}
 
+      <div class="message-body">${body}</div>
       <div class="attachment-slot"></div>
-
       <div class="reaction-row"></div>
 
       <div class="message-meta">
-        ${
-          message.edited_at
-            ? "<span>изменено</span>"
-            : ""
-        }
-
+        ${message.edited_at ? "<span>изменено</span>" : ""}
         <time>
-          ${new Date(
-            message.created_at
-          ).toLocaleTimeString([], {
+          ${new Date(message.created_at).toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",
           })}
         </time>
+        ${
+          mine
+            ? `<span class="read-state" title="${message.read_at ? "Прочитано" : "Доставлено"}">${message.read_at ? "✓✓" : "✓"}</span>`
+            : ""
+        }
       </div>
 
       ${
         !message.deleted_at
           ? `
         <div class="message-actions">
-          <button
-            data-react="❤️"
-            title="Реакция"
-          >
-            ♡
-          </button>
-
+          <button data-reply title="Ответить">↩</button>
+          <button data-react="❤️" title="Реакция">♡</button>
           ${
             mine
               ? `
-            <button
-              data-edit
-              title="Редактировать"
-            >
-              ✎
-            </button>
-
-            <button
-              data-delete
-              title="Удалить"
-            >
-              ×
-            </button>
+            <button data-edit title="Редактировать">✎</button>
+            <button data-delete title="Удалить">×</button>
           `
-              : ""
+              : `
+            <button data-hide title="Удалить у себя">×</button>
+          `
           }
         </div>
       `
-          : ""
+          : mine
+            ? `
+        <div class="message-actions">
+          <button data-hide title="Скрыть у себя">×</button>
+        </div>
+      `
+            : ""
       }
     `;
 
-    if (
-      message.attachment_path &&
-      !message.deleted_at
-    ) {
-      const url =
-        await attachmentUrl(message);
+    if (message.attachment_path && !message.deleted_at) {
+      const url = await attachmentUrl(message);
+      const slot = node.querySelector(".attachment-slot");
 
-      const slot =
-        node.querySelector(
-          ".attachment-slot"
-        );
-
-      if (
-        url &&
-        message.attachment_type?.startsWith(
-          "image/"
-        )
-      ) {
+      if (url && message.attachment_type?.startsWith("image/")) {
         slot.innerHTML = `
-          <a
-            href="${url}"
-            target="_blank"
-          >
-            <img
-              class="message-image"
-              src="${url}"
-              alt=""
-            >
+          <a href="${url}" target="_blank" rel="noopener">
+            <img class="message-image" src="${url}" alt="">
           </a>
         `;
       } else if (url) {
         slot.innerHTML = `
-          <a
-            class="file-card"
-            href="${url}"
-            target="_blank"
-            download
-          >
-            📎 ${escapeHtml(
-              message.attachment_name ||
-                "Скачать файл"
-            )}
+          <a class="file-card" href="${url}" target="_blank" rel="noopener" download>
+            <span class="file-card-icon">↧</span>
+            <span>
+              <strong>${escapeHtml(message.attachment_name || "Файл")}</strong>
+              <small>${formatFileSize(message.attachment_size)}</small>
+            </span>
           </a>
         `;
       }
     }
 
-    renderReactions(
-      node.querySelector(
-        ".reaction-row"
-      ),
-      message
+    renderReactions(node.querySelector(".reaction-row"), message);
+
+    node.querySelector("[data-react]")?.addEventListener("click", () =>
+      toggleReaction(message.id, "❤️")
     );
 
-    node
-      .querySelector("[data-react]")
-      ?.addEventListener(
-        "click",
-        () =>
-          toggleReaction(
-            message.id,
-            "❤️"
-          )
-      );
+    node.querySelector("[data-reply]")?.addEventListener("click", () =>
+      beginReply(message)
+    );
 
-    node
-      .querySelector("[data-edit]")
-      ?.addEventListener(
-        "click",
-        () => beginEdit(message)
-      );
+    node.querySelector("[data-edit]")?.addEventListener("click", () =>
+      beginEdit(message)
+    );
 
-    node
-      .querySelector("[data-delete]")
-      ?.addEventListener(
-        "click",
-        () => deleteMessage(message)
-      );
+    node.querySelector("[data-delete]")?.addEventListener("click", () =>
+      openDeleteMessageDialog(message)
+    );
+
+    node.querySelector("[data-hide]")?.addEventListener("click", () =>
+      hideMessageForMe(message)
+    );
+
+    node.querySelector("[data-jump-reply]")?.addEventListener("click", () => {
+      const target = box.querySelector(`[data-message-id="${replyTarget.id}"]`);
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+      target?.classList.add("message-highlight");
+      setTimeout(() => target?.classList.remove("message-highlight"), 1000);
+    });
 
     box.appendChild(node);
   }
 
   if (!filter) {
-    box.scrollTop =
-      box.scrollHeight;
+    requestAnimationFrame(() => {
+      box.scrollTop = box.scrollHeight;
+    });
   }
+}
+
+function formatFileSize(bytes) {
+  if (!Number.isFinite(Number(bytes))) return "";
+  const value = Number(bytes);
+  if (value < 1024) return `${value} Б`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} КБ`;
+  return `${(value / 1024 / 1024).toFixed(1)} МБ`;
+}
+
+function beginReply(message) {
+  state.replyingTo = message;
+  const bar = $("replyBar");
+  $("replyAuthor").textContent =
+    message.sender_id === state.session.user.id
+      ? "Вы"
+      : state.activeOther?.display_name || "Сообщение";
+  $("replyText").textContent =
+    message.body?.trim() || message.attachment_name || "Вложение";
+  bar.classList.remove("hidden");
+  $("messageInput").focus();
+}
+
+function cancelReply() {
+  state.replyingTo = null;
+  $("replyBar")?.classList.add("hidden");
 }
 
 function renderReactions(
@@ -1203,17 +1191,47 @@ $("editMessageForm").addEventListener(
   }
 );
 
-async function deleteMessage(message) {
-  if (
-    !confirm(
-      "Удалить это сообщение?"
-    )
-  ) {
+let pendingDeleteMessage = null;
+
+function openDeleteMessageDialog(message) {
+  pendingDeleteMessage = message;
+  const dialog = $("deleteMessageDialog");
+  $("deleteForEveryone").classList.toggle(
+    "hidden",
+    message.sender_id !== state.session.user.id
+  );
+  dialog.showModal();
+}
+
+async function hideMessageForMe(message) {
+  try {
+    const { error } = await state.supabase.rpc("hide_message_for_me", {
+      p_message_id: message.id,
+    });
+
+    if (error) throw error;
+
+    state.messages = state.messages.filter((item) => item.id !== message.id);
+    await Promise.all([renderMessages(), loadConversations()]);
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || "Не удалось удалить сообщение у себя.", "error");
+  }
+}
+
+async function deleteMessageForEveryone(message) {
+  if (message.sender_id !== state.session.user.id) {
     return;
   }
 
-  const { error } =
-    await state.supabase
+  try {
+    if (message.attachment_path) {
+      await state.supabase.storage
+        .from("egoria-files")
+        .remove([message.attachment_path]);
+    }
+
+    const { error } = await state.supabase
       .from("messages")
       .update({
         body: "",
@@ -1221,23 +1239,39 @@ async function deleteMessage(message) {
         attachment_name: null,
         attachment_type: null,
         attachment_size: null,
-        deleted_at:
-          new Date().toISOString(),
+        deleted_at: new Date().toISOString(),
+        edited_at: null,
       })
-      .eq("id", message.id);
+      .eq("id", message.id)
+      .eq("sender_id", state.session.user.id);
 
-  if (error) {
-    showToast(
-      error.message,
-      "error"
-    );
-  } else {
-    await Promise.all([
-      loadMessages(),
-      loadConversations(),
-    ]);
+    if (error) throw error;
+
+    await Promise.all([loadMessages(), loadConversations()]);
+  } catch (error) {
+    console.error(error);
+    showToast(error.message || "Не удалось удалить сообщение.", "error");
   }
 }
+
+$("deleteForMe").onclick = async () => {
+  if (!pendingDeleteMessage) return;
+  $("deleteMessageDialog").close();
+  await hideMessageForMe(pendingDeleteMessage);
+  pendingDeleteMessage = null;
+};
+
+$("deleteForEveryone").onclick = async () => {
+  if (!pendingDeleteMessage) return;
+  $("deleteMessageDialog").close();
+  await deleteMessageForEveryone(pendingDeleteMessage);
+  pendingDeleteMessage = null;
+};
+
+$("cancelDeleteMessage").onclick = () => {
+  pendingDeleteMessage = null;
+  $("deleteMessageDialog").close();
+};
 
 $("messageForm").addEventListener(
   "submit",
@@ -1321,6 +1355,7 @@ const path = `${state.session.user.id}/${state.activeConversation.id}/${crypto.r
             sender_id:
               state.session.user.id,
             body,
+            reply_to: state.replyingTo?.id || null,
             ...attachment,
           });
 
@@ -1347,6 +1382,8 @@ const path = `${state.session.user.id}/${state.activeConversation.id}/${crypto.r
 
       $("attachmentPreview")
         .classList.add("hidden");
+
+      cancelReply();
 
       await Promise.all([
         loadMessages(),
@@ -1383,41 +1420,101 @@ function cleanupRealtime() {
 function subscribeToMessages() {
   cleanupRealtime();
 
-  state.realtimeChannel =
-    state.supabase
-      .channel(
-        `conversation-${
-          state.activeConversation.id
-        }`
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "messages",
-          filter:
-            `conversation_id=eq.${
-              state.activeConversation.id
-            }`,
-        },
-        () =>
-          Promise.all([
-            loadMessages(),
-            loadConversations(),
-          ])
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table:
-            "message_reactions",
-        },
-        () => loadMessages()
-      )
-      .subscribe();
+  const activeId = state.activeConversation.id;
+
+  state.realtimeChannel = state.supabase
+    .channel(`conversation-${activeId}`, {
+      config: {
+        broadcast: { self: false },
+      },
+    })
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "messages",
+        filter: `conversation_id=eq.${activeId}`,
+      },
+      async () => {
+        await loadMessages();
+        await markConversationRead();
+        await loadConversations();
+      }
+    )
+    .on(
+      "postgres_changes",
+      {
+        event: "*",
+        schema: "public",
+        table: "message_reactions",
+      },
+      () => loadMessages()
+    )
+    .on(
+      "broadcast",
+      { event: "typing" },
+      ({ payload }) => {
+        if (
+          payload?.user_id !== state.session.user.id &&
+          payload?.conversation_id === state.activeConversation?.id
+        ) {
+          showTypingStatus();
+        }
+      }
+    )
+    .subscribe();
+}
+
+async function markConversationRead() {
+  if (!state.activeConversation) return;
+
+  const now = new Date().toISOString();
+  const { error } = await state.supabase.rpc("mark_conversation_read", {
+    p_conversation_id: state.activeConversation.id,
+  });
+
+  if (error) {
+    console.warn("Не удалось отметить сообщения прочитанными:", error);
+    return;
+  }
+
+  state.messages = state.messages.map((message) =>
+    message.sender_id !== state.session.user.id && !message.read_at
+      ? { ...message, read_at: now }
+      : message
+  );
+}
+
+function showTypingStatus() {
+  clearTimeout(state.typingTimer);
+  $("chatStatus").textContent = "печатает…";
+  $("chatStatus").classList.add("typing");
+
+  state.typingTimer = setTimeout(() => {
+    $("chatStatus").classList.remove("typing");
+    if (state.activeOther) {
+      renderOnlineStatus(state.activeOther);
+    }
+  }, 1700);
+}
+
+let typingSendTimer = null;
+
+function sendTypingSignal() {
+  if (!state.realtimeChannel || !state.activeConversation) return;
+
+  clearTimeout(typingSendTimer);
+  typingSendTimer = setTimeout(() => {
+    state.realtimeChannel.send({
+      type: "broadcast",
+      event: "typing",
+      payload: {
+        user_id: state.session.user.id,
+        conversation_id: state.activeConversation.id,
+      },
+    });
+  }, 120);
 }
 
 async function updatePresence() {
@@ -1436,6 +1533,53 @@ async function updatePresence() {
       state.session.user.id
     );
 }
+
+
+function profilePresenceText(profile) {
+  const last = profile?.last_seen ? new Date(profile.last_seen) : null;
+  if (!last) return `@${profile?.username || ""}`;
+
+  const diff = Date.now() - last.getTime();
+  if (diff < 70000) return "онлайн";
+
+  if (diff < 60 * 60 * 1000) {
+    const minutes = Math.max(1, Math.floor(diff / 60000));
+    return `был(а) ${minutes} мин. назад`;
+  }
+
+  if (diff < 24 * 60 * 60 * 1000) {
+    const hours = Math.max(1, Math.floor(diff / 3600000));
+    return `был(а) ${hours} ч. назад`;
+  }
+
+  return `был(а) ${last.toLocaleDateString([], {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  })}`;
+}
+
+async function openUserProfile(profile) {
+  if (!profile) return;
+
+  state.profiles.set(profile.id, profile);
+
+  $("viewProfileName").textContent = profile.display_name || "Пользователь";
+  $("viewProfileUsername").textContent = `@${profile.username}`;
+  $("viewProfileBio").textContent = profile.bio?.trim() || "О себе пока ничего не указано.";
+  $("viewProfileStatus").textContent = profilePresenceText(profile);
+
+  await renderAvatar($("viewProfileAvatar"), profile);
+
+  $("writeToUser").onclick = () => {
+    $("userProfileDialog").close();
+    startDirectChat(profile);
+  };
+
+  $("userProfileDialog").showModal();
+}
+
+$("closeUserProfile").onclick = () => $("userProfileDialog").close();
 
 $("profileBtn").onclick = () => {
   $("profileName").value =
@@ -1477,32 +1621,34 @@ $("profileForm").addEventListener(
           );
         }
 
-        const ext =
-          avatar.name
-            .split(".")
-            .pop()
-            ?.toLowerCase() ||
-          "jpg";
+        const rawExt = avatar.name
+          .split(".")
+          .pop()
+          ?.toLowerCase();
 
-        avatarPath = `${
-          state.session.user.id
-        }/avatar-${Date.now()}.${ext}`;
+        const ext = rawExt && /^(png|jpe?g|webp|gif)$/.test(rawExt)
+          ? rawExt.replace("jpeg", "jpg")
+          : "jpg";
 
-        const { error } =
-          await state.supabase.storage
-            .from("egoria-avatars")
-            .upload(
-              avatarPath,
-              avatar,
-              {
-                upsert: true,
-                contentType:
-                  avatar.type,
-              }
-            );
+        const previousAvatarPath = state.me.avatar_path;
+        avatarPath = `${state.session.user.id}/avatar-${crypto.randomUUID()}.${ext}`;
+
+        const { error } = await state.supabase.storage
+          .from("egoria-avatars")
+          .upload(avatarPath, avatar, {
+            upsert: false,
+            contentType: avatar.type || "image/jpeg",
+            cacheControl: "3600",
+          });
 
         if (error) {
           throw error;
+        }
+
+        if (previousAvatarPath && previousAvatarPath !== avatarPath) {
+          await state.supabase.storage
+            .from("egoria-avatars")
+            .remove([previousAvatarPath]);
         }
       }
 
@@ -1559,6 +1705,19 @@ $("mobileBack").onclick = () =>
   $("appScreen")
     .classList.remove("chat-open");
 
+
+$("cancelReply").onclick = cancelReply;
+
+$("chatAvatar").onclick = () => {
+  if (state.activeOther) openUserProfile(state.activeOther);
+};
+
+$("chatProfileLink").onclick = () => {
+  if (state.activeOther) openUserProfile(state.activeOther);
+};
+
+$("myAvatar").onclick = () => $("profileBtn").click();
+
 $("attachmentInput").onchange = () => {
   const file =
     $("attachmentInput").files[0];
@@ -1595,6 +1754,8 @@ $("messageInput").addEventListener(
         input.scrollHeight,
         150
       )}px`;
+
+    sendTypingSignal();
   }
 );
 
@@ -1613,15 +1774,13 @@ $("messageInput").addEventListener(
   }
 );
 
-$("userSearch").addEventListener(
-  "input",
-  () =>
-    loadPeople(
-      $("userSearch")
-        .value
-        .trim()
-    )
-);
+$("userSearch").addEventListener("input", () => {
+  const value = $("userSearch").value.trim();
+  if (value) {
+    switchSideTab("people");
+  }
+  loadPeople(value);
+});
 
 $("chatsTab").onclick = () =>
   switchSideTab("chats");
@@ -1630,6 +1789,8 @@ $("peopleTab").onclick = () =>
   switchSideTab("people");
 
 function switchSideTab(tab) {
+  state.activeSideTab = tab;
+
   $("chatsTab").classList.toggle(
     "active",
     tab === "chats"
